@@ -1,0 +1,147 @@
+================================================================================
+AUTO-SCALING WITH SCALE-DOWN - IMPLEMENTATION COMPLETE
+================================================================================
+Date: March 27, 2026
+Status: CODE UPDATED AND DEPLOYED
+
+================================================================================
+CHANGES IMPLEMENTED
+================================================================================
+
+1. Added SCALE_DOWN_THRESHOLD = 50% configuration
+2. Created deprovision_gcp_instance() function
+   - Deletes GCP instance via gcloud
+   - Removes firewall rules
+   - Returns to local VM monitoring
+
+3. Refactored main() loop:
+   - Continuous monitoring (while True, not while not scaled)
+   - Tracks both high_load_count and low_load_count
+   - Shows status: [LOCAL] or [SCALED]
+   - Scale up: CPU/Mem > 75% for 4 checks
+   - Scale down: CPU/Mem < 50% for 4 checks
+   
+4. Removed all emojis from output
+5. Fixed syntax warning (dollar sign escape)
+
+================================================================================
+NEW MONITORING OUTPUT FORMAT
+================================================================================
+
+Before scaling:
+  [LOCAL] [22:00:00] CPU: 5.0% | Memory: 35.0%
+
+High load detected:
+  [LOCAL] [22:01:00] CPU: 100.0% | Memory: 35.0% [HIGH] Count: 1/4
+  [LOCAL] [22:01:30] CPU: 100.0% | Memory: 35.0% [HIGH] Count: 2/4
+  ...
+  [LOCAL] [22:02:30] CPU: 100.0% | Memory: 35.0% [HIGH] Count: 4/4
+  
+  Sustained high load detected! Scaling up...
+
+After scaling up:
+  [SCALED] [22:05:00] CPU: 95.0% | Memory: 36.0%
+
+Low load detected:
+  [SCALED] [22:08:00] CPU: 10.0% | Memory: 35.0% [LOW] Count: 1/4
+  [SCALED] [22:08:30] CPU: 5.0% | Memory: 35.0% [LOW] Count: 2/4
+  ...
+  [SCALED] [22:09:30] CPU: 3.0% | Memory: 34.0% [LOW] Count: 4/4
+  
+  Sustained low load detected! Scaling down...
+
+Back to local:
+  [LOCAL] [22:10:00] CPU: 2.0% | Memory: 34.0%
+
+================================================================================
+TESTING COMMANDS
+================================================================================
+
+Terminal 1 - Start Autoscaler:
+  ssh sujiv@192.168.122.10
+  source ~/autoscale_venv/bin/activate
+  python3 -u ~/autoscaler.py
+
+Terminal 2 - Trigger Scale-UP (high load):
+  ssh sujiv@192.168.122.10 "python3 ~/direct_stress.py 8 &"
+  
+  Wait 2 minutes for scale-up...
+  
+  Check GCP created:
+  gcloud compute instances list --filter="name:autoscale-cloud-vm"
+
+Terminal 2 - Wait for Scale-DOWN (low load):
+  # Stress test runs for 3 minutes then stops automatically
+  # After 2 more minutes of low load, autoscaler scales down
+  
+  Check GCP deleted:
+  gcloud compute instances list --filter="name:autoscale-cloud-vm"
+  (should show 0 instances)
+
+================================================================================
+FILE LOCATIONS
+================================================================================
+
+Host:
+  - autoscaler.py (updated with scale-down)
+  - direct_stress.py (reliable load generator)
+  - TEST_INSTRUCTIONS.md (detailed manual)
+
+VM (192.168.122.10):
+  - ~/autoscaler.py (deployed)
+  - ~/direct_stress.py (deployed)
+  - ~/autoscale_venv/ (Python environment)
+  - /tmp/scaling.log (scale events log)
+
+================================================================================
+CURRENT GCP STATUS
+================================================================================
+
+Instance: autoscale-cloud-vm
+IP: 34.72.145.8
+Status: RUNNING (from previous test)
+
+⚠️ REMINDER: Instance is incurring costs!
+Destroy when ready:
+  gcloud compute instances delete autoscale-cloud-vm \
+    --zone=us-central1-a \
+    --project=m25cse011-vcc-asn3 \
+    --quiet
+
+================================================================================
+EXPECTED TEST RESULTS
+================================================================================
+
+Total test time: ~8-10 minutes
+  - Initial monitoring: 30s
+  - High load detection: 2 min
+  - GCP provision + deploy: 2-3 min
+  - Stress test duration: 3 min
+  - Low load detection: 2 min
+  - Deprovision: 30s
+
+Cost per test: < $0.02
+
+Timeline:
+  0:00 - Start monitoring [LOCAL]
+  0:30 - Trigger load
+  2:30 - Scale UP triggered
+  5:00 - GCP deployed [SCALED]
+  8:00 - Load drops below 50%
+ 10:00 - Scale DOWN triggered
+ 10:30 - Back to [LOCAL]
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+1. Run the test manually following TEST_INSTRUCTIONS.md
+2. Observe complete scale-up and scale-down cycle
+3. Record video demonstration showing:
+   - Autoscaler output in Terminal 1
+   - Load triggering in Terminal 2
+   - GCP instance creation/deletion
+   - Application accessibility during scaled state
+4. Add video link to README.md
+
+================================================================================
