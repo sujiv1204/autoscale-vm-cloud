@@ -13,8 +13,9 @@ from datetime import datetime
 # Configuration
 CPU_THRESHOLD = 75
 MEMORY_THRESHOLD = 75
+SCALE_DOWN_THRESHOLD = 50  # Scale down when below this
 CHECK_INTERVAL = 30  # seconds
-REQUIRED_CHECKS = 4  # 2 minutes of sustained load
+REQUIRED_CHECKS = 4  # 2 minutes of sustained load/low usage for scaling
 
 # GCP Configuration
 GCP_ZONE = "us-central1-a"
@@ -42,10 +43,41 @@ def check_gcp_instance_exists():
         return False
 
 
+def deprovision_gcp_instance():
+    """Destroy GCP instance to scale down"""
+    print("\n" + "="*60)
+    print("DEPROVISIONING GCP INSTANCE")
+    print("="*60)
+    
+    print("Deleting instance...")
+    result = subprocess.run(
+        f"gcloud compute instances delete {GCP_INSTANCE_NAME} --zone={GCP_ZONE} --quiet",
+        shell=True,
+        capture_output=True,
+        text=True
+    )
+    
+    if result.returncode == 0:
+        print("Instance deleted")
+        
+        # Delete firewall rule
+        print("Cleaning up firewall rule...")
+        subprocess.run(
+            f"gcloud compute firewall-rules delete allow-app-{GCP_INSTANCE_NAME} --quiet 2>/dev/null",
+            shell=True,
+            capture_output=True
+        )
+        print("="*60)
+        return True
+    else:
+        print(f"Error: {result.stderr}")
+        return False
+
+
 def provision_gcp_instance():
     """Provision GCP instance and deploy application"""
     print("\n" + "="*60)
-    print("🚀 PROVISIONING GCP INSTANCE")
+    print("PROVISIONING GCP INSTANCE")
     print("="*60)
 
     # Create instance
@@ -60,7 +92,7 @@ def provision_gcp_instance():
 apt-get update
 apt-get install -y docker.io
 systemctl start docker
-usermod -aG docker \$(getent passwd 1000 | cut -d: -f1)
+usermod -aG docker $(getent passwd 1000 | cut -d: -f1)
 ' """
 
     print("Creating instance...")
@@ -70,7 +102,7 @@ usermod -aG docker \$(getent passwd 1000 | cut -d: -f1)
         print(f"Error: {result.stderr}")
         return None
 
-    print("✓ Instance created")
+    print("OK Instance created")
 
     # Create firewall rule
     print("Creating firewall rule...")
@@ -97,7 +129,7 @@ usermod -aG docker \$(getent passwd 1000 | cut -d: -f1)
         print("Error: Could not get instance IP")
         return None
 
-    print(f"✓ Instance IP: {gcp_ip}")
+    print(f"OK Instance IP: {gcp_ip}")
 
     # Deploy application
     print("\nDeploying application...")
@@ -126,7 +158,7 @@ usermod -aG docker \$(getent passwd 1000 | cut -d: -f1)
     subprocess.run("rm -f /tmp/app.tar.gz", shell=True)
 
     print("\n" + "="*60)
-    print(f"✅ DEPLOYMENT COMPLETE")
+    print("DEPLOYMENT COMPLETE")
     print(f"Application URL: http://{gcp_ip}:5000")
     print("="*60)
 
@@ -139,43 +171,69 @@ def main():
     print("="*60)
     print(f"CPU Threshold: {CPU_THRESHOLD}%")
     print(f"Memory Threshold: {MEMORY_THRESHOLD}%")
+    print(f"Scale-down Threshold: {SCALE_DOWN_THRESHOLD}%")
     print(f"Check Interval: {CHECK_INTERVAL}s")
     print("="*60 + "\n")
 
-    violation_count = 0
-    scaled = False
+    high_load_count = 0
+    low_load_count = 0
+    scaled_up = False
 
     try:
-        while not scaled:
+        while True:
             cpu, memory = get_resource_usage()
             timestamp = datetime.now().strftime("%H:%M:%S")
+            
+            gcp_exists = check_gcp_instance_exists()
+            status = "[SCALED]" if gcp_exists else "[LOCAL]"
 
-            print(f"[{timestamp}] CPU: {cpu:.1f}% | Memory: {memory:.1f}%", end="")
+            print(f"{status} [{timestamp}] CPU: {cpu:.1f}% | Memory: {memory:.1f}%", end="")
 
+            # Scale-up logic
             if cpu >= CPU_THRESHOLD or memory >= MEMORY_THRESHOLD:
-                violation_count += 1
-                print(
-                    f" ⚠️  THRESHOLD EXCEEDED! ({violation_count}/{REQUIRED_CHECKS})")
+                high_load_count += 1
+                low_load_count = 0
+                print(f" [HIGH] Count: {high_load_count}/{REQUIRED_CHECKS}")
 
-                if violation_count >= REQUIRED_CHECKS:
-                    print(f"\n⚠️  Sustained high load detected!")
+                if high_load_count >= REQUIRED_CHECKS and not gcp_exists:
+                    print(f"\nSustained high load detected! Scaling up...")
 
-                    if not check_gcp_instance_exists():
-                        gcp_ip = provision_gcp_instance()
-                        if gcp_ip:
-                            scaled = True
+                    gcp_ip = provision_gcp_instance()
+                    if gcp_ip:
+                        scaled_up = True
+                        with open('/tmp/scaling.log', 'a') as f:
+                            f.write(f"{datetime.now().isoformat()}: Scaled UP to {gcp_ip}\n")
+                        high_load_count = 0
+            
+            # Scale-down logic
+            elif cpu < SCALE_DOWN_THRESHOLD and memory < SCALE_DOWN_THRESHOLD:
+                high_load_count = 0
+                
+                if gcp_exists:
+                    low_load_count += 1
+                    print(f" [LOW] Count: {low_load_count}/{REQUIRED_CHECKS}")
+                    
+                    if low_load_count >= REQUIRED_CHECKS:
+                        print(f"\nSustained low load detected! Scaling down...")
+                        
+                        if deprovision_gcp_instance():
+                            scaled_up = False
                             with open('/tmp/scaling.log', 'a') as f:
-                                f.write(
-                                    f"{datetime.now().isoformat()}: Scaled to {gcp_ip}\n")
-                    else:
-                        print("GCP instance already exists!")
-                        scaled = True
-            else:
-                if violation_count > 0:
-                    print(f" ✓ Back to normal (was {violation_count})")
+                                f.write(f"{datetime.now().isoformat()}: Scaled DOWN\n")
+                            low_load_count = 0
                 else:
                     print()
-                violation_count = 0
+            
+            # Normal load
+            else:
+                if high_load_count > 0:
+                    print(f" [NORMAL] (was high: {high_load_count})")
+                elif low_load_count > 0:
+                    print(f" [NORMAL] (was low: {low_load_count})")
+                else:
+                    print()
+                high_load_count = 0
+                low_load_count = 0
 
             time.sleep(CHECK_INTERVAL)
 
