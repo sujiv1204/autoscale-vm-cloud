@@ -1,0 +1,142 @@
+================================================================================
+AUTO-SCALING TEST - COMPLETE LOG
+================================================================================
+Test Date: March 27, 2026 20:51-20:57 UTC
+Duration: ~6 minutes total
+
+================================================================================
+PHASE 1: PREPARATION
+================================================================================
+✓ VM configured: 192.168.122.10 (Ubuntu 22.04, 2 CPUs, 2GB RAM)
+✓ Monitoring stack: Prometheus, Node Exporter, Grafana running in Docker
+✓ Sample app: Flask app with stress endpoints (port 5000)
+✓ Autoscaler: Python script with psutil monitoring
+✓ GCP CLI: Configured inside VM (project: m25cse011-vcc-asn3)
+
+================================================================================
+PHASE 2: AUTOSCALER START
+================================================================================
+Time: 20:51:39
+Command: python3 -u ~/autoscaler.py
+Configuration:
+  - CPU Threshold: 75%
+  - Memory Threshold: 75%
+  - Check Interval: 30 seconds
+  - Required Checks: 4 (2 minutes sustained load)
+  
+Initial readings:
+  [20:51:39] CPU: 0.0% | Memory: 36.0% ✓
+  [20:52:10] CPU: 54.0% | Memory: 35.4% ✓
+  [20:52:41] CPU: 50.8% | Memory: 35.7% ✓
+  [20:53:12] CPU: 50.8% | Memory: 35.5% ✓
+  [20:53:43] CPU: 55.2% | Memory: 35.4% ✓
+
+================================================================================
+PHASE 3: LOAD GENERATION
+================================================================================
+Time: 20:53:50
+Method: Direct Python multiprocessing script (8 processes)
+Command: python3 ~/direct_stress.py 8
+
+Result: Successfully generated 100% CPU load
+
+================================================================================
+PHASE 4: THRESHOLD VIOLATIONS DETECTED
+================================================================================
+[20:54:14] CPU: 100.0% | Memory: 35.5% ⚠️ THRESHOLD EXCEEDED! (1/4)
+[20:54:45] CPU: 100.0% | Memory: 35.6% ⚠️ THRESHOLD EXCEEDED! (2/4)
+[20:55:16] CPU: 100.0% | Memory: 35.6% ⚠️ THRESHOLD EXCEEDED! (3/4)
+[20:55:47] CPU: 100.0% | Memory: 35.9% ⚠️ THRESHOLD EXCEEDED! (4/4)
+
+✅ Sustained high load confirmed after 2 minutes
+
+================================================================================
+PHASE 5: GCP PROVISIONING
+================================================================================
+Time: 20:55:47
+Actions:
+  1. ✓ Creating instance... (gcloud compute instances create)
+  2. ✓ Instance created: autoscale-cloud-vm
+  3. ✓ Creating firewall rule... (allow tcp:5000)
+  4. ✓ Waiting for instance to be ready...
+  5. ✓ Instance IP obtained: 35.188.2.77
+
+GCP Instance Details:
+  - Name: autoscale-cloud-vm
+  - Zone: us-central1-a
+  - Machine Type: e2-micro (2 vCPUs, 1GB RAM)
+  - Internal IP: 10.128.0.3
+  - External IP: 35.188.2.77
+  - Status: RUNNING
+
+================================================================================
+PHASE 6: APPLICATION DEPLOYMENT
+================================================================================
+Time: 20:56-20:57
+Actions:
+  1. ✓ Saving Docker image (sample-app:latest)
+  2. ✓ Transferring to GCP (via gcloud compute scp)
+  3. ⚠️ Loading and running on GCP (Docker not pre-installed on e2-micro)
+  
+Deployment Status: PARTIAL
+  - Instance: Created and running ✓
+  - Firewall: Configured ✓
+  - Docker: Not found on GCP instance ⚠️
+  - App: Deployment incomplete
+
+================================================================================
+KEY FINDINGS
+================================================================================
+
+✅ WHAT WORKED:
+1. Autoscaler successfully monitors CPU/Memory from inside VM using psutil
+2. Threshold detection works correctly (4 consecutive violations)
+3. GCP instance provisioning works from inside VM
+4. Firewall rules created automatically
+5. Docker image save/transfer logic executes
+
+⚠️ ISSUES DISCOVERED:
+1. Initial curl stress test (intensity=2,4) insufficient for 2-CPU VM
+   - intensity=2 → 50% CPU (below 75% threshold)
+   - intensity=4 → 50% CPU (capped by app code)
+   
+2. Sample app code limited intensity to 2×CPU count
+   - Fixed: Changed limit from 2x to 8x CPU count
+   
+3. GCP e2-micro instances don't have Docker pre-installed
+   - Autoscaler has Docker install logic but needs extended timeout
+   
+4. Direct Python stress (multiprocessing) more reliable than Flask endpoint
+   - Flask/gunicorn workers can limit parallel execution
+   - Direct script achieved consistent 100% CPU
+
+✅ SOLUTIONS IMPLEMENTED:
+1. Updated trigger_load.sh: intensity 2 → 8
+2. Modified sample-app/app.py: max intensity 2x → 8x
+3. Created direct_stress.py for reliable load generation
+
+================================================================================
+COST ANALYSIS
+================================================================================
+GCP Resources Used:
+  - e2-micro instance: ~$0.006/hour
+  - Disk (10GB standard): ~$0.04/month
+  - Network egress: ~$0.12/GB
+  
+Test Duration: ~10 minutes
+Estimated Cost: $0.01
+
+================================================================================
+CONCLUSION
+================================================================================
+✅ Auto-scaling mechanism PROVEN WORKING
+✅ Local VM → GCP migration triggered successfully
+✅ Instance created with correct configuration
+⚠️ App deployment needs Docker pre-install or extended setup time
+
+================================================================================
+CLEANUP REQUIRED
+================================================================================
+Command to destroy GCP instance:
+  gcloud compute instances delete autoscale-cloud-vm --zone=us-central1-a --quiet
+
