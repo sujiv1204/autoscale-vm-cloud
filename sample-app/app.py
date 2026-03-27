@@ -100,9 +100,9 @@ def stress_cpu():
     duration = int(data.get('duration', 60))  # seconds
     intensity = int(data.get('intensity', 1))  # number of threads
     
-    # Limit intensity to number of CPUs
+    # Limit intensity to prevent excessive load
     max_intensity = psutil.cpu_count() or 1
-    intensity = min(intensity, max_intensity * 2)  # Allow up to 2x CPU count
+    intensity = min(intensity, max_intensity * 8)  # Allow up to 8x CPU count for stress testing
     
     stop_stress = False
     
