@@ -24,9 +24,9 @@ if __name__ == '__main__':
         print(f"Started process {i+1}/{num_processes}")
 
     print(
-        f"\n🔥 All {num_processes} processes running. This will take 3 minutes...")
+        f"\nAll {num_processes} processes running. This will take 3 minutes...")
 
     for p in processes:
         p.join()
 
-    print("✓ Stress test complete")
+    print("Stress test complete")

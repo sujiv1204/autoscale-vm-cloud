@@ -1,71 +1,334 @@
 #!/usr/bin/env python3
 """
-Sample Load Generator Application
-This Flask app provides endpoints to simulate CPU and memory stress for testing auto-scaling.
+Sample Application for Auto-Scaling Demo
+Flask app with a visual dashboard showing system info and environment detection.
 """
 
-from flask import Flask, jsonify, request
-import multiprocessing
+from flask import Flask, jsonify, request, render_template_string
 import time
 import os
-import sys
-import threading
+import socket
+import platform
 import psutil
 
 app = Flask(__name__)
 
-# Global variables for stress tests
-stress_threads = []
-stop_stress = False
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auto-Scale Demo App</title>
+    <meta http-equiv="refresh" content="5">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
-def cpu_stress_worker(duration):
-    """Worker function to stress CPU"""
-    global stop_stress
-    end_time = time.time() + duration
-    while time.time() < end_time and not stop_stress:
-        # Busy loop to consume CPU
-        _ = sum(i * i for i in range(10000))
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: #0f1923;
+            color: #c9d1d9;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+        }
 
-def memory_stress_worker(size_mb, duration):
-    """Worker function to stress memory"""
-    global stop_stress
-    end_time = time.time() + duration
-    # Allocate memory
-    data = []
-    chunk_size = 1024 * 1024  # 1MB chunks
-    for _ in range(size_mb):
-        if time.time() >= end_time or stop_stress:
-            break
-        data.append(b'0' * chunk_size)
-        time.sleep(0.1)  # Small delay to avoid instant allocation
-    
-    # Hold memory until duration expires
-    while time.time() < end_time and not stop_stress:
-        time.sleep(0.5)
+        .container {
+            max-width: 720px;
+            width: 100%;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .header h1 {
+            font-size: 1.6rem;
+            font-weight: 600;
+            color: #e6edf3;
+            margin-bottom: 0.5rem;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.3rem 0.9rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        .badge-local {
+            background: #1a3a2a;
+            color: #3fb950;
+            border: 1px solid #2a5a3a;
+        }
+
+        .badge-cloud {
+            background: #1a2a3a;
+            color: #58a6ff;
+            border: 1px solid #2a3a5a;
+        }
+
+        .cards {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .card {
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 8px;
+            padding: 1.2rem;
+        }
+
+        .card-full {
+            grid-column: 1 / -1;
+        }
+
+        .card-label {
+            font-size: 0.75rem;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 0.5rem;
+        }
+
+        .card-value {
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: #e6edf3;
+        }
+
+        .card-value.small {
+            font-size: 0.95rem;
+            font-weight: 400;
+        }
+
+        .meter {
+            margin-top: 0.6rem;
+            background: #21262d;
+            border-radius: 4px;
+            height: 6px;
+            overflow: hidden;
+        }
+
+        .meter-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.4s ease;
+        }
+
+        .meter-fill.green { background: #3fb950; }
+        .meter-fill.yellow { background: #d29922; }
+        .meter-fill.red { background: #f85149; }
+
+        .info-table {
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 8px;
+            padding: 1.2rem;
+            margin-bottom: 1rem;
+        }
+
+        .info-table h3 {
+            font-size: 0.85rem;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 0.8rem;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.4rem 0;
+            border-bottom: 1px solid #21262d;
+            font-size: 0.85rem;
+        }
+
+        .info-row:last-child { border-bottom: none; }
+
+        .info-key {
+            color: #8b949e;
+        }
+
+        .info-val {
+            font-family: 'Consolas', 'Monaco', monospace;
+            color: #e6edf3;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 1.5rem;
+            font-size: 0.75rem;
+            color: #484f58;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Auto-Scale Demo Application</h1>
+            <span class="badge {{ 'badge-cloud' if is_cloud else 'badge-local' }}">
+                Running on {{ 'Cloud (GCP)' if is_cloud else 'Local VM' }}
+            </span>
+        </div>
+
+        <div class="cards">
+            <div class="card">
+                <div class="card-label">CPU Usage</div>
+                <div class="card-value">{{ cpu_percent }}%</div>
+                <div class="meter">
+                    <div class="meter-fill {{ 'red' if cpu_percent > 75 else 'yellow' if cpu_percent > 50 else 'green' }}"
+                         style="width: {{ cpu_percent }}%"></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-label">Memory Usage</div>
+                <div class="card-value">{{ mem_percent }}%</div>
+                <div class="meter">
+                    <div class="meter-fill {{ 'red' if mem_percent > 75 else 'yellow' if mem_percent > 50 else 'green' }}"
+                         style="width: {{ mem_percent }}%"></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-label">CPU Cores</div>
+                <div class="card-value">{{ cpu_count }}</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Memory Total</div>
+                <div class="card-value">{{ mem_total_mb }} MB</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Disk Usage</div>
+                <div class="card-value">{{ disk_percent }}%</div>
+                <div class="meter">
+                    <div class="meter-fill {{ 'red' if disk_percent > 75 else 'yellow' if disk_percent > 50 else 'green' }}"
+                         style="width: {{ disk_percent }}%"></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-label">Uptime</div>
+                <div class="card-value small">{{ uptime }}</div>
+            </div>
+        </div>
+
+        <div class="info-table">
+            <h3>Server Information</h3>
+            <div class="info-row">
+                <span class="info-key">Hostname</span>
+                <span class="info-val">{{ hostname }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-key">Platform</span>
+                <span class="info-val">{{ platform_info }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-key">Accessed Via</span>
+                <span class="info-val">{{ request_host }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-key">Environment</span>
+                <span class="info-val">{{ deploy_env }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-key">Container ID</span>
+                <span class="info-val">{{ container_id }}</span>
+            </div>
+        </div>
+
+        <div class="info-table">
+            <h3>API Endpoints</h3>
+            <div class="info-row">
+                <span class="info-val">GET /health</span>
+                <span class="info-key">Health check</span>
+            </div>
+            <div class="info-row">
+                <span class="info-val">GET /metrics</span>
+                <span class="info-key">System metrics (JSON)</span>
+            </div>
+        </div>
+
+        <div class="footer">
+            Auto-Scale Demo | Page refreshes every 5 seconds | {{ timestamp }}
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+def get_deploy_env():
+    """Get deployment environment from env var"""
+    return os.environ.get('DEPLOY_ENV', 'local')
+
+
+def get_container_id():
+    """Get Docker container ID from hostname (Docker sets hostname to container ID)"""
+    hostname = socket.gethostname()
+    # Docker container hostnames are 12-char hex strings
+    if len(hostname) == 12 and all(c in '0123456789abcdef' for c in hostname):
+        return hostname
+    return hostname
+
+
+def get_uptime():
+    """Get system uptime as readable string"""
+    boot_time = psutil.boot_time()
+    uptime_seconds = time.time() - boot_time
+    days = int(uptime_seconds // 86400)
+    hours = int((uptime_seconds % 86400) // 3600)
+    minutes = int((uptime_seconds % 3600) // 60)
+    if days > 0:
+        return f"{days}d {hours}h {minutes}m"
+    elif hours > 0:
+        return f"{hours}h {minutes}m"
+    else:
+        return f"{minutes}m"
+
 
 @app.route('/')
 def home():
-    """Home endpoint with API documentation"""
-    return jsonify({
-        'app': 'Auto-Scaling Demo Application',
-        'version': '1.0',
-        'endpoints': {
-            '/': 'This help page',
-            '/health': 'Health check endpoint',
-            '/metrics': 'Current system metrics',
-            '/stress/cpu': 'POST - Generate CPU load (params: duration, intensity)',
-            '/stress/memory': 'POST - Generate memory load (params: duration, size_mb)',
-            '/stress/stop': 'POST - Stop all active stress tests'
-        }
-    })
+    """Dashboard page"""
+    cpu_percent = psutil.cpu_percent(interval=0.5)
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+    is_cloud = get_deploy_env() == 'cloud'
+
+    return render_template_string(HTML_TEMPLATE,
+        hostname=socket.gethostname(),
+        platform_info=f"{platform.system()} {platform.release()}",
+        cpu_percent=round(cpu_percent, 1),
+        cpu_count=psutil.cpu_count(),
+        mem_percent=round(memory.percent, 1),
+        mem_total_mb=round(memory.total / (1024 * 1024)),
+        disk_percent=round(disk.percent, 1),
+        uptime=get_uptime(),
+        request_host=request.host,
+        deploy_env="Cloud (GCP)" if is_cloud else "Local VM",
+        container_id=get_container_id(),
+        is_cloud=is_cloud,
+        timestamp=time.strftime("%Y-%m-%d %H:%M:%S")
+    )
+
 
 @app.route('/health')
 def health():
     """Health check endpoint"""
     return jsonify({
         'status': 'healthy',
+        'hostname': socket.gethostname(),
+        'environment': get_deploy_env(),
         'timestamp': time.time()
     })
+
 
 @app.route('/metrics')
 def metrics():
@@ -73,102 +336,26 @@ def metrics():
     cpu_percent = psutil.cpu_percent(interval=1)
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage('/')
-    
+
     return jsonify({
+        'hostname': socket.gethostname(),
+        'environment': get_deploy_env(),
         'cpu': {
             'percent': cpu_percent,
             'count': psutil.cpu_count()
         },
         'memory': {
-            'total_mb': memory.total / (1024 * 1024),
-            'used_mb': memory.used / (1024 * 1024),
+            'total_mb': round(memory.total / (1024 * 1024)),
+            'used_mb': round(memory.used / (1024 * 1024)),
             'percent': memory.percent
         },
         'disk': {
-            'total_gb': disk.total / (1024 * 1024 * 1024),
-            'used_gb': disk.used / (1024 * 1024 * 1024),
+            'total_gb': round(disk.total / (1024 * 1024 * 1024), 1),
+            'used_gb': round(disk.used / (1024 * 1024 * 1024), 1),
             'percent': disk.percent
         }
     })
 
-@app.route('/stress/cpu', methods=['POST'])
-def stress_cpu():
-    """Generate CPU load"""
-    global stress_threads, stop_stress
-    
-    data = request.get_json() or {}
-    duration = int(data.get('duration', 60))  # seconds
-    intensity = int(data.get('intensity', 1))  # number of threads
-    
-    # Limit intensity to prevent excessive load
-    max_intensity = psutil.cpu_count() or 1
-    intensity = min(intensity, max_intensity * 8)  # Allow up to 8x CPU count for stress testing
-    
-    stop_stress = False
-    
-    # Start stress threads
-    for i in range(intensity):
-        thread = threading.Thread(target=cpu_stress_worker, args=(duration,))
-        thread.daemon = True
-        thread.start()
-        stress_threads.append(thread)
-    
-    return jsonify({
-        'status': 'started',
-        'type': 'cpu',
-        'duration': duration,
-        'threads': intensity,
-        'message': f'CPU stress test started with {intensity} threads for {duration} seconds'
-    })
-
-@app.route('/stress/memory', methods=['POST'])
-def stress_memory():
-    """Generate memory load"""
-    global stress_threads, stop_stress
-    
-    data = request.get_json() or {}
-    duration = int(data.get('duration', 60))  # seconds
-    size_mb = int(data.get('size_mb', 500))  # MB to allocate
-    
-    # Get available memory
-    memory = psutil.virtual_memory()
-    available_mb = memory.available / (1024 * 1024)
-    
-    # Limit size to 80% of available memory
-    max_size = int(available_mb * 0.8)
-    size_mb = min(size_mb, max_size)
-    
-    stop_stress = False
-    
-    # Start memory stress thread
-    thread = threading.Thread(target=memory_stress_worker, args=(size_mb, duration))
-    thread.daemon = True
-    thread.start()
-    stress_threads.append(thread)
-    
-    return jsonify({
-        'status': 'started',
-        'type': 'memory',
-        'duration': duration,
-        'size_mb': size_mb,
-        'message': f'Memory stress test started allocating {size_mb}MB for {duration} seconds'
-    })
-
-@app.route('/stress/stop', methods=['POST'])
-def stop_stress_test():
-    """Stop all active stress tests"""
-    global stop_stress, stress_threads
-    
-    stop_stress = True
-    active_count = len([t for t in stress_threads if t.is_alive()])
-    
-    # Clear the threads list
-    stress_threads = []
-    
-    return jsonify({
-        'status': 'stopped',
-        'message': f'Stopped {active_count} active stress test(s)'
-    })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

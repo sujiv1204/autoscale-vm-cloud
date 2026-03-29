@@ -1,190 +1,151 @@
 # Auto-Scaling VM to Cloud (GCP)
 
-**Simple auto-scaling system that monitors VM resource usage and scales to Google Cloud Platform when thresholds exceed 75%.**
-
-The auto-scaler runs **inside the VM** monitoring itself using psutil and automatically provisions GCP instances when needed.
+Auto-scaling system that monitors a local VM's resource usage and scales to Google Cloud Platform when CPU or memory exceeds 75%.
 
 ---
 
-## Quick Start
+## Repository Structure
 
-### 1. Setup (Already Done ✅)
+```
+autoscale-vm-cloud/
+|-- autoscaler.py          # Core auto-scaling script (runs inside VM)
+|-- direct_stress.py       # CPU stress test to trigger scaling
+|-- requirements.txt       # Python dependencies (psutil)
+|-- sample-app/
+|   |-- Dockerfile
+|   |-- app.py             # Flask web app with dashboard
+|   +-- requirements.txt
+|-- monitoring/
+|   |-- docker-compose.yml # Prometheus + Grafana + Node Exporter
+|   |-- prometheus/
+|   |   +-- prometheus.yml
+|   +-- grafana/
+|       +-- provisioning/
+|           |-- datasources/
+|           |   +-- prometheus.yml
+|           +-- dashboards/
+|               +-- dashboards.yml
++-- .gitignore
+```
 
-- ✅ Local VM running at 192.168.122.10
-- ✅ Docker installed on VM
-- ✅ Monitoring stack running (Prometheus + Node Exporter)
-- ✅ Sample app deployed on VM
-- ✅ gcloud CLI configured on VM
-- ✅ Python dependencies installed in venv
+---
 
-### 2. Run Auto-Scaler
+## Prerequisites
+
+- Host machine with KVM/QEMU and virt-manager
+- Local VM running Ubuntu 22.04 (IP: 192.168.122.10)
+- Docker installed on the VM
+- Python 3 with psutil
+- Google Cloud SDK (gcloud) authenticated on the VM
+
+---
+
+## Step 1: VM Setup
 
 ```bash
+# Install KVM on host
+sudo apt install qemu-kvm libvirt-daemon-system virt-manager
+
+# Create VM in virt-manager (Ubuntu 22.04, 2 vCPU, 2GB RAM, 20GB disk)
+# Configure static IP: 192.168.122.10
+
 # SSH into VM
 ssh sujiv@192.168.122.10
 
-# Start autoscaler
+# Install Docker
+sudo apt update
+sudo apt install -y docker.io
+sudo systemctl enable docker
+sudo usermod -aG docker $USER
+
+# Install Python and create venv
+sudo apt install -y python3-pip python3-venv
+python3 -m venv ~/autoscale_venv
+source ~/autoscale_venv/bin/activate
+pip install psutil
+
+# Install and configure gcloud CLI
+curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+sudo apt update && sudo apt install -y google-cloud-cli
+gcloud init
+gcloud auth login
+gcloud config set project YOUR_PROJECT_ID
+gcloud config set compute/zone us-central1-a
+```
+
+## Step 2: Build and Run Sample App
+
+```bash
+cd ~/sample-app
+docker build -t sample-app:latest .
+docker run -d -p 5000:5000 --name sample-app sample-app:latest
+curl http://localhost:5000/health
+```
+
+## Step 3: Start Monitoring (Prometheus + Grafana)
+
+```bash
+cd ~/monitoring
+docker-compose up -d
+```
+
+- Prometheus: http://192.168.122.10:9090
+- Node Exporter: http://192.168.122.10:9100/metrics
+- Grafana: http://192.168.122.10:3000 (login: admin / admin123)
+
+### Import Grafana Dashboard
+
+1. Open Grafana at http://192.168.122.10:3000
+2. Go to Dashboards > Import
+3. Enter dashboard ID: **1860**
+4. Select Prometheus as the data source
+5. Click Import
+
+This imports the "Node Exporter Full" dashboard which shows CPU, memory, disk, network, and other system metrics.
+
+## Step 4: Run Auto-Scaler
+
+```bash
+# Terminal 1: Start auto-scaler
 source ~/autoscale_venv/bin/activate
 python3 ~/autoscaler.py
+
+# Terminal 2: Trigger CPU load
+source ~/autoscale_venv/bin/activate
+python3 ~/direct_stress.py 8
 ```
 
-### 3. Trigger Load
+## Step 5: Verify Cloud Deployment
 
-**In another terminal:**
+After auto-scaling triggers:
+
 ```bash
-# From host
-ssh sujiv@192.168.122.10 "~/trigger_load.sh"
-
-# OR directly
-curl -X POST http://192.168.122.10:5000/stress/cpu \
-  -H "Content-Type: application/json" \
-  -d '{"duration": 300, "intensity": 2}'
+gcloud compute instances list
+curl http://<GCP_IP>:5000/health
+gcloud compute ssh autoscale-cloud-vm --zone=us-central1-a --command='sudo docker ps'
 ```
 
-### 4. Watch Auto-Scaling
-
-After ~2 minutes of sustained load:
-- Auto-scaler detects 75% threshold
-- Provisions GCP e2-micro instance
-- Deploys application to cloud
-- Returns GCP instance IP
+Open http://<GCP_IP>:5000 in browser to see "Running on Cloud (GCP)".
 
 ---
 
 ## How It Works
 
-```
-┌─────────────────┐
-│   Local VM      │  1. Monitors itself (CPU/Memory)
-│  192.168.122.10 │  2. Detects threshold > 75%
-│                 │  3. Creates GCP instance
-│  • Sample App   │  4. Transfers Docker image
-│  • Prometheus   │  5. Deploys to cloud
-│  • Autoscaler   │  
-└─────────────────┘
-         │
-         │ Scales when load > 75%
-         ▼
-┌─────────────────┐
-│  GCP Instance   │
-│  e2-micro       │
-│                 │
-│  • Sample App   │
-│  • Port 5000    │
-└─────────────────┘
-```
-
----
-
-## Components
-
-### 1. Monitoring Stack (`monitoring/`)
-- **Prometheus**: Metrics collection (port 9090)
-- **Node Exporter**: System metrics (port 9100)  
-- **Grafana**: Visualization (port 3000, admin/admin123)
-
-### 2. Sample Application (`sample-app/`)
-- **Flask app** with stress test endpoints
-- Endpoints: `/health`, `/metrics`, `/stress/cpu`, `/stress/memory`
-- Runs on port 5000
-
-### 3. Auto-Scaler (`autoscaler.py`)
-- Monitors CPU and memory usage
-- Detects 75% threshold for 2 minutes
-- Provisions GCP instance automatically
-- Deploys application to cloud
-
----
-
-## Configuration
-
-Edit `autoscaler.py`:
-
-```python
-CPU_THRESHOLD = 75          # Trigger at 75% CPU
-MEMORY_THRESHOLD = 75       # Trigger at 75% Memory
-CHECK_INTERVAL = 30         # Check every 30 seconds
-REQUIRED_CHECKS = 4         # 4 checks = 2 minutes
-
-GCP_ZONE = "us-central1-a"
-GCP_MACHINE_TYPE = "e2-micro"
-```
-
----
-
-## Access Points
-
-- **Local App:** http://192.168.122.10:5000
-- **Prometheus:** http://192.168.122.10:9090
-- **Grafana:** http://192.168.122.10:3000
-- **GCP App:** http://[GCP_IP]:5000 (after scaling)
-
----
-
-## Testing
-
-```bash
-# Check system status
-curl http://192.168.122.10:5000/metrics
-
-# Trigger CPU stress
-curl -X POST http://192.168.122.10:5000/stress/cpu \
-  -H "Content-Type: application/json" \
-  -d '{"duration": 300, "intensity": 2}'
-
-# Check if GCP instance exists
-gcloud compute instances list
-
-# Stop stress test
-curl -X POST http://192.168.122.10:5000/stress/stop
-```
-
----
-
-## Cost
-
-| Item | Cost | Duration | Total |
-|------|------|----------|-------|
-| e2-micro instance | $0.0067/hr | 2 hours | $0.47 |
-| 10GB disk | $0.04/month | 1 day | $0.30 |
-| Network | $0.12/GB | 1GB | $0.12 |
-| **Total** | | | **$0.89** |
-
-**With $20 budget:** ~22 demos possible
+1. autoscaler.py monitors CPU and memory via psutil every 10 seconds
+2. If either exceeds 75% for 4 consecutive checks, triggers scale-up
+3. Creates a GCP e2-micro instance with Docker via startup script
+4. Polls until Docker is ready (up to 5 minutes)
+5. Saves Docker image, transfers via gcloud compute scp
+6. Loads image and runs container with -e DEPLOY_ENV=cloud
+7. Verifies deployment via /health endpoint
+8. When load drops below 50% for 4 checks, deletes GCP instance
 
 ---
 
 ## Cleanup
 
 ```bash
-# Delete GCP instance
 gcloud compute instances delete autoscale-cloud-vm --zone=us-central1-a --quiet
-
-# Delete firewall rule
 gcloud compute firewall-rules delete allow-app-autoscale-cloud-vm --quiet
-
-# Verify
-gcloud compute instances list
 ```
-
----
-
-## Documentation
-
-See `docs/IMPLEMENTATION_GUIDE.md` for:
-- Detailed setup instructions
-- Troubleshooting guide
-- GCP configuration (CLI + Console)
-- Cost management
-
----
-
-## Plagiarism Declaration
-
-This project is original work created for academic purposes. All code developed from scratch using official documentation. No code copied from external sources.
-
----
-
-## License
-
-MIT License - See LICENSE file
